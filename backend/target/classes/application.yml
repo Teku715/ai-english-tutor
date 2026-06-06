@@ -1,0 +1,7 @@
+server:
+  port: 8081
+
+silicon:
+  api-key: sk-ffzpunutxfeipjuhabhlqhwfngabcqrcqowgxacnjkknttqm
+  model: Qwen/Qwen2.5-7B-Instruct
+  base-url: https://api.siliconflow.cn/v1
