@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 鑻辫鍙ｈ闄粌</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", Arial, sans-serif; background: #0f0f1a; color: #eee; min-height: 100vh; }
+        .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+        h1 { text-align: center; color: #4ade80; font-size: 28px; margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #666; margin-bottom: 20px; font-size: 13px; }
+
+        /* 鍦烘櫙閫夋嫨 */
+        .scene-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+        .scene-btn { background: #1a1a2e; border: 2px solid #333; border-radius: 10px; padding: 14px 10px; cursor: pointer; text-align: center; transition: all 0.2s; }
+        .scene-btn:hover { border-color: #4ade80; }
+        .scene-btn.active { border-color: #4ade80; background: #162818; }
+        .scene-btn .name { color: #4ade80; font-size: 15px; font-weight: bold; margin-bottom: 4px; }
+        .scene-btn .desc { color: #888; font-size: 11px; }
+
+        /* 瀵硅瘽鍖?*/
+        .chat-box { background: #1a1a2e; border-radius: 12px; padding: 16px; height: 350px; overflow-y: auto; margin-bottom: 16px; }
+        .msg { margin-bottom: 12px; line-height: 1.5; }
+        .msg.user { text-align: right; }
+        .msg .bubble { display: inline-block; padding: 8px 12px; border-radius: 10px; max-width: 80%; font-size: 14px; }
+        .msg.ai .bubble { background: #252540; text-align: left; }
+        .msg.user .bubble { background: #166534; text-align: right; }
+        .msg .score { font-size: 11px; color: #facc15; margin-top: 3px; }
+
+        /* 褰曢煶鍖?*/
+        .ctrl { display: flex; gap: 10px; align-items: center; }
+        .mic-btn { width: 60px; height: 60px; border-radius: 50%; background: #166534; border: none; cursor: pointer; font-size: 24px; display: flex; align-items: center; justify-content: center; transition: all 0.2s; flex-shrink: 0; }
+        .mic-btn.recording { background: #dc2626; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+        .text-input { flex: 1; background: #252540; border: 1px solid #333; border-radius: 8px; color: #fff; font-size: 14px; padding: 12px 14px; }
+        .text-input:focus { outline: none; border-color: #4ade80; }
+        .send-btn { background: #4ade80; color: #0f0f1a; border: none; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; }
+        .send-btn:hover { background: #22c55e; }
+
+        /* 搴曢儴鎸夐挳 */
+        .bottom-btns { display: flex; gap: 10px; margin-top: 12px; }
+        .action-btn { flex: 1; background: #252540; color: #4ade80; border: 1px solid #333; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+        .action-btn:hover { border-color: #4ade80; }
+        .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* 鐘舵€?*/
+        .status { text-align: center; color: #666; font-size: 13px; height: 20px; margin: 8px 0; }
+        .status.error { color: #f87171; }
+        .status.success { color: #4ade80; }
+
+        /* 璇勫垎鏄剧ず */
+        .eval-box { background: #1a1a2e; border-radius: 12px; padding: 16px; margin-top: 16px; display: none; }
+        .eval-box h3 { color: #4ade80; margin-bottom: 10px; font-size: 15px; }
+        .eval-box pre { color: #ccc; font-size: 13px; white-space: pre-wrap; font-family: inherit; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>馃帳 AI 鑻辫鍙ｈ闄粌</h1>
+        <p class="subtitle">鍩轰簬纭呭熀娴佸姩 Qwen2.5-7B 路 瀹炴椂璇煶瀵硅瘽 路 鍙戦煶璇勬祴 路 璇惧悗鎬荤粨</p>
+
+        <!-- 鍦烘櫙閫夋嫨 -->
+        <div class="scene-grid" id="sceneGrid"></div>
+
+        <!-- 瀵硅瘽璁板綍 -->
+        <div class="chat-box" id="chatBox">
+            <div class="msg ai"><div class="bubble">馃憢 Welcome! Select a scenario above and start speaking. Your AI tutor is ready!</div></div>
+        </div>
+
+        <!-- 杈撳叆鎺у埗 -->
+        <div class="ctrl">
+            <button class="mic-btn" id="micBtn" title="鎸変綇璇磋瘽">馃帣锔?/button>
+            <input class="text-input" id="textInput" placeholder="鎴栫洿鎺ヨ緭鍏ヨ嫳鏂囧彂閫?.." onkeydown="if(event.key==='Enter')sendText()">
+            <button class="send-btn" onclick="sendText()">鍙戦€?/button>
+        </div>
+
+        <!-- 鐘舵€?-->
+        <div class="status" id="status"></div>
+
+        <!-- 搴曢儴鎿嶄綔 -->
+        <div class="bottom-btns">
+            <button class="action-btn" id="evalBtn" onclick="evaluateLast()" disabled>馃摑 璇勬祴鏈€鍚庝竴鍙?/button>
+            <button class="action-btn" id="summaryBtn" onclick="requestSummary()" disabled>馃搳 璇惧悗鎬荤粨</button>
+            <button class="action-btn" onclick="resetChat()">馃攧 閲嶆柊寮€濮?/button>
+        </div>
+
+        <!-- 璇勬祴缁撴灉 -->
+        <div class="eval-box" id="evalBox">
+            <h3>馃摑 鍙戦煶璇勬祴缁撴灉</h3>
+            <pre id="evalResult"></pre>
+        </div>
+    </div>
+
+    <script>
+        // 鐘舵€?        let currentScene = "interview";
+        let conversationHistory = "";
+        let lastUserText = "";
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let recognition = null;
+
+        // 鍒濆鍖栧満鏅?        const scenes = [
+            { id: "interview", name: "姹傝亴闈㈣瘯", desc: "Job interview" },
+            { id: "restaurant", name: "椁愬巺鐐归", desc: "Restaurant dining" },
+            { id: "meeting", name: "鍟嗗姟浼氳", desc: "Business meeting" },
+            { id: "travel", name: "鏃呰闂矾", desc: "Asking directions" },
+            { id: "shopping", name: "璐墿浜ゆ祦", desc: "Shopping chat" }
+        ];
+
+        const sceneGrid = document.getElementById("sceneGrid");
+        scenes.forEach(s => {
+            const btn = document.createElement("div");
+            btn.className = "scene-btn" + (s.id === currentScene ? " active" : "");
+            btn.onclick = () => selectScene(s.id);
+            btn.innerHTML = `<div class="name">${s.name}</div><div class="desc">${s.desc}</div>`;
+            sceneGrid.appendChild(btn);
+        });
+
+        function selectScene(id) {
+            currentScene = id;
+            document.querySelectorAll(".scene-btn").forEach(b => b.classList.remove("active"));
+            event.currentTarget.classList.add("active");
+            resetChat();
+        }
+
+        // 璇煶璇嗗埆
+        function initRecognition() {
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                setStatus("鈿狅笍 娴忚鍣ㄤ笉鏀寔璇煶璇嗗埆锛岃鐢ㄦ枃鏈緭鍏?, "error");
+                return;
+            }
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.lang = 'en-US';
+            recognition.continuous = false;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event) => {
+                const text = event.results[0][0].transcript;
+                document.getElementById("textInput").value = text;
+                sendText();
+            };
+            recognition.onerror = (e) => setStatus("璇煶璇嗗埆閿欒: " + e.error, "error");
+            recognition.onend = () => { isRecording = false; document.getElementById("micBtn").classList.remove("recording"); };
+        }
+
+        // 褰曢煶鎸夐挳
+        const micBtn = document.getElementById("micBtn");
+        micBtn.addEventListener("mousedown", startRecording);
+        micBtn.addEventListener("mouseup", stopRecording);
+        micBtn.addEventListener("mouseleave", stopRecording);
+        micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRecording(); });
+        micBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
+
+        function startRecording() {
+            if (!recognition) initRecognition();
+            if (!recognition) return;
+            try { recognition.start(); isRecording = true; micBtn.classList.add("recording"); setStatus("馃帳 姝ｅ湪褰曢煶... 璇村畬鏉惧紑", ""); } catch (e) { }
+        }
+
+        function stopRecording() {
+            if (recognition && isRecording) recognition.stop();
+        }
+
+        // 鍙戦€佹枃鏈?        async function sendText() {
+            const input = document.getElementById("textInput");
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = "";
+            lastUserText = text;
+
+            // 鏄剧ず鐢ㄦ埛娑堟伅
+            addMsg("user", text);
+            setStatus("鈴?AI鍥炲涓?..", "");
+
+            // 璋冪敤鍚庣
+            try {
+                const resp = await fetch("http://localhost:8081/api/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ scene: currentScene, message: text, history: conversationHistory })
+                });
+                const data = await resp.json();
+                const reply = data.reply || "鏃犲洖澶?;
+
+                // 鎻愬彇璇勫垎锛堟牸寮忥細[璇勫垎: X/10]锛?                let scoreText = "";
+                let cleanReply = reply;
+                const scoreMatch = reply.match(/\[璇勫垎[锛?]\s*(\d+)\/10\]/);
+                if (scoreMatch) { scoreText = `猸?璇勫垎: ${scoreMatch[1]}/10`; cleanReply = reply.replace(/\[璇勫垎[锛?]\s*\d+\/10\]\s*/, ""); }
+
+                addMsg("ai", cleanReply.trim(), scoreText);
+                conversationHistory += `\n鐢ㄦ埛锛?{text}\nAI锛?{reply}\n`;
+                setStatus("", "");
+                document.getElementById("evalBtn").disabled = false;
+                document.getElementById("summaryBtn").disabled = false;
+            } catch (e) { setStatus("鉂?缃戠粶閿欒锛? + e.message, "error"); }
+        }
+
+        function addMsg(type, text, score = "") {
+            const box = document.getElementById("chatBox");
+            const div = document.createElement("div");
+            div.className = `msg ${type}`;
+            let html = `<div class="bubble">${escapeHtml(text)}</div>`;
+            if (score) html += `<div class="score">${score}</div>`;
+            div.innerHTML = html;
+            box.appendChild(div);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
+        }
+
+        // 璇勬祴
+        async function evaluateLast() {
+            if (!lastUserText) return;
+            setStatus("鈴?璇勬祴涓?..", "");
+            try {
+                const resp = await fetch("http://localhost:8081/api/evaluate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: lastUserText, scene: currentScene })
+                });
+                const data = await resp.json();
+                document.getElementById("evalResult").textContent = data.evaluation || "";
+                document.getElementById("evalBox").style.display = "block";
+                setStatus("", "");
+            } catch (e) { setStatus("璇勬祴澶辫触: " + e.message, "error"); }
+        }
+
+        // 鎬荤粨
+        async function requestSummary() {
+            setStatus("鈴?鐢熸垚鎬荤粨涓?..", "");
+            try {
+                const resp = await fetch("http://localhost:8081/api/summary", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ history: conversationHistory })
+                });
+                const data = await resp.json();
+                document.getElementById("evalResult").textContent = "馃搳 璇惧悗瀛︿範鎬荤粨\n\n" + (data.summary || "");
+                document.getElementById("evalBox").style.display = "block";
+                setStatus("", "");
+            } catch (e) { setStatus("鎬荤粨澶辫触: " + e.message, "error"); }
+        }
+
+        // 閲嶇疆
+        function resetChat() {
+            document.getElementById("chatBox").innerHTML = '<div class="msg ai"><div class="bubble">馃憢 Welcome! Select a scenario above and start speaking. Your AI tutor is ready!</div></div>';
+            document.getElementById("evalBox").style.display = "none";
+            conversationHistory = "";
+            lastUserText = "";
+            document.getElementById("evalBtn").disabled = true;
+            document.getElementById("summaryBtn").disabled = true;
+            setStatus("", "");
+        }
+
+        function setStatus(text, type) {
+            const s = document.getElementById("status");
+            s.textContent = text;
+            s.className = "status " + type;
+        }
+    </script>
+</body>
+</html>
