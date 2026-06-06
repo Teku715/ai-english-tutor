@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 英语口语陪练</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <noscript>
+    <p style="color:#fff;padding:20px;">请启用 JavaScript 以使用英语口语陪练。</p>
+  </noscript>
+  <div class="app">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">XEngineer · Topic 1</p>
+        <h1>AI 英语口语陪练</h1>
+        <p class="subtitle">场景化对话 · 实时语音 · 波形反馈 · TTS 播报 · 智能纠错与总结</p>
+      </div>
+      <div id="statusPill" class="status-pill">连接中...</div>
+    </header>
+
+    <section class="panel">
+      <h2 style="margin:0 0 14px;font-size:18px;">选择练习场景</h2>
+      <div class="scene-grid" id="sceneGrid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="practice-top">
+        <div>
+          <h2 id="sceneTitle" style="margin:0;font-size:18px;">求职面试</h2>
+          <p id="sceneDesc" style="margin:6px 0 0;color:var(--muted);font-size:13px;">Job interview practice</p>
+        </div>
+        <button class="action-btn" onclick="resetChat()">重新开始</button>
+      </div>
+
+      <div class="chat-shell">
+        <div class="chat-box" id="chatBox"></div>
+        <div class="wave-panel" id="wavePanel">
+          <div class="wave-label">录音中</div>
+          <canvas id="waveCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <button class="mic-btn" id="micBtn" title="按住说话">🎙️</button>
+        <input class="text-input" id="textInput" placeholder="输入英文，或按住麦克风说话..." />
+        <button class="send-btn" id="sendBtn">发送</button>
+      </div>
+
+      <div class="status" id="status"></div>
+
+      <div class="bottom-btns">
+        <button class="action-btn" id="evalBtn" disabled>评测最后一句</button>
+        <button class="action-btn" id="summaryBtn" disabled>课后总结</button>
+        <button class="action-btn" id="ttsToggleBtn">自动播报：开</button>
+      </div>
+
+      <div class="eval-box" id="evalBox">
+        <h3 id="evalTitle">结果</h3>
+        <pre id="evalResult"></pre>
+      </div>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
