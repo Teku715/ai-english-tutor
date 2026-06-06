@@ -3,6 +3,7 @@ package com.englishtutor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import java.util.*;
+import java.time.Instant;
 
 @RestController
 @RequestMapping("/api")
@@ -11,6 +12,9 @@ public class EnglishTutorController {
 
     @Autowired
     private LLMService llmService;
+
+    @Autowired
+    private ConversationService conversationService;
 
     // 场景列表
     @GetMapping("/scenes")
@@ -24,43 +28,115 @@ public class EnglishTutorController {
         return list;
     }
 
-    // 对话接口
-    @PostMapping("/chat")
-    public Map<String, String> chat(@RequestBody Map<String, String> req) {
+    // 开启新练习会话
+    @PostMapping("/session")
+    public Map<String, Object> createSession(@RequestBody Map<String, String> req) {
         String scene = req.getOrDefault("scene", "interview");
-        String message = req.getOrDefault("message", "");
-        String history = req.getOrDefault("history", "");
-
-        String prompt = buildChatPrompt(scene, message, history);
-        String reply = llmService.chat(prompt);
-
-        Map<String, String> result = new HashMap<>();
-        result.put("reply", reply);
+        String sessionId = conversationService.startSession(scene);
+        Map<String, Object> result = new HashMap<>();
+        result.put("sessionId", sessionId);
+        result.put("scene", scene);
         return result;
     }
 
-    // 评测接口（语音转文字后的评测）
+    // 对话接口（支持sessionId或旧的history方式）
+    @PostMapping("/chat")
+    public Map<String, Object> chat(@RequestBody Map<String, String> req) {
+        String scene = req.getOrDefault("scene", "interview");
+        String message = req.getOrDefault("message", "");
+        String history = req.getOrDefault("history", "");
+        String sessionId = req.get("sessionId");
+
+        if (message == null || message.trim().isEmpty()) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "消息内容不能为空");
+            err.put("code", 400);
+            return err;
+        }
+
+        String prompt;
+        if (sessionId != null && conversationService.hasSession(sessionId)) {
+            String historyStr = conversationService.buildHistoryString(sessionId);
+            prompt = buildChatPrompt(scene, message, historyStr);
+            conversationService.addMessage(sessionId, "用户", message);
+        } else {
+            prompt = buildChatPrompt(scene, message, history);
+        }
+
+        String reply = llmService.chat(prompt);
+
+        if (sessionId != null && conversationService.hasSession(sessionId)) {
+            conversationService.addMessage(sessionId, "AI", reply);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("reply", reply);
+        if (sessionId != null) {
+            result.put("sessionId", sessionId);
+        }
+        return result;
+    }
+
+    // 获取对话历史
+    @GetMapping("/history")
+    public Map<String, Object> history(@RequestParam String sessionId) {
+        if (sessionId == null || sessionId.trim().isEmpty()) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "sessionId不能为空");
+            err.put("code", 400);
+            return err;
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("sessionId", sessionId);
+        result.put("history", conversationService.getHistory(sessionId));
+        return result;
+    }
+
+    // 评测接口（返回结构化JSON）
     @PostMapping("/evaluate")
-    public Map<String, String> evaluate(@RequestBody Map<String, String> req) {
+    public Map<String, Object> evaluate(@RequestBody Map<String, String> req) {
         String text = req.getOrDefault("text", "");
         String scene = req.getOrDefault("scene", "interview");
+
+        if (text == null || text.trim().isEmpty()) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "评测文本不能为空");
+            err.put("code", 400);
+            return err;
+        }
 
         String prompt = "你是一个英语教师。请评测用户在下述场景中的英语表达。\n\n" +
                 "场景：" + scene + "\n" +
                 "用户说：" + text + "\n\n" +
-                "请从以下维度评分（0-100）：\n" +
+                "请从以下维度评分（每项0-100）：\n" +
                 "1. 语法正确性\n" +
                 "2. 词汇适当性\n" +
                 "3. 发音流畅度（根据文字判断）\n" +
                 "4. 表达自然度\n\n" +
                 "然后给出2-3个纠错建议。\n\n" +
-                "输出格式：\n" +
-                "语法：85分 | 词汇：80分 | 流畅度：75分 | 自然度：80分\n" +
-                "建议：1. ... 2. ... 3. ...";
+                "输出格式（严格按此JSON格式，不要有其他内容）：\n" +
+                "{\"grammar\":85,\"vocabulary\":80,\"fluency\":75,\"naturalness\":80,\"suggestions\":[\"建议1\",\"建议2\",\"建议3\"]}";
 
         String result = llmService.chat(prompt);
-        Map<String, String> res = new HashMap<>();
-        res.put("evaluation", result);
+
+        Map<String, Object> res = new HashMap<>();
+        res.put("text", text);
+        res.put("scene", scene);
+        res.put("raw", result);
+
+        // 尝试解析JSON结构化分数
+        try {
+            // 简单解析：grammar/N, vocabulary/N, fluency/N, naturalness/N
+            Map<String, Object> scores = new HashMap<>();
+            scores.put("grammar", parseScore(result, "grammar"));
+            scores.put("vocabulary", parseScore(result, "vocabulary"));
+            scores.put("fluency", parseScore(result, "fluency"));
+            scores.put("naturalness", parseScore(result, "naturalness"));
+            res.put("scores", scores);
+        } catch (Exception e) {
+            // 解析失败时返回原始结果
+        }
+
         return res;
     }
 
@@ -84,25 +160,36 @@ public class EnglishTutorController {
         return res;
     }
 
+    // 增强的健康检查
     @GetMapping("/health")
-    public String health() {
-        return "ok";
+    public Map<String, Object> health() {
+        Map<String, Object> result = new HashMap<>();
+        result.put("status", "ok");
+        result.put("timestamp", Instant.now().toString());
+        result.put("service", "ai-english-tutor");
+        return result;
     }
 
     private String buildChatPrompt(String scene, String message, String history) {
         String sceneDesc;
-        if ("interview".equals(scene)) {
-            sceneDesc = "求职面试场景。你扮演面试官，提问专业且有挑战性的问题。";
-        } else if ("restaurant".equals(scene)) {
-            sceneDesc = "餐厅点餐场景。你扮演服务员，帮助顾客完成点餐。";
-        } else if ("meeting".equals(scene)) {
-            sceneDesc = "商务会议场景。你扮演会议主持人，引导讨论。";
-        } else if ("travel".equals(scene)) {
-            sceneDesc = "旅行问路场景。你扮演当地人，帮助游客。";
-        } else if ("shopping".equals(scene)) {
-            sceneDesc = "购物交流场景。你扮演店员，与顾客沟通需求。";
-        } else {
-            sceneDesc = "日常英语对话练习。";
+        switch (scene) {
+            case "interview":
+                sceneDesc = "求职面试场景。你扮演面试官，提问专业且有挑战性的问题。";
+                break;
+            case "restaurant":
+                sceneDesc = "餐厅点餐场景。你扮演服务员，帮助顾客完成点餐。";
+                break;
+            case "meeting":
+                sceneDesc = "商务会议场景。你扮演会议主持人，引导讨论。";
+                break;
+            case "travel":
+                sceneDesc = "旅行问路场景。你扮演当地人，帮助游客。";
+                break;
+            case "shopping":
+                sceneDesc = "购物交流场景。你扮演店员，与顾客沟通需求。";
+                break;
+            default:
+                sceneDesc = "日常英语对话练习。";
         }
 
         String systemPrompt = "你是AI英语口语陪练。" + sceneDesc +
@@ -122,5 +209,21 @@ public class EnglishTutorController {
         }
 
         return systemPrompt + "\n\n用户：" + message + "\n[AI]:";
+    }
+
+    private int parseScore(String text, String field) {
+        // 简单解析：查找 "field":N 或 "field": N 或 field N
+        String[] patterns = {
+            "\"" + field + "\":\\s*(\\d+)",
+            field + "\"\\s*(\\d+)",
+            field + "\\s*(\\d+)"
+        };
+        for (String pattern : patterns) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern, java.util.regex.Pattern.CASE_INSENSITIVE).matcher(text);
+            if (m.find()) {
+                return Math.min(100, Math.max(0, Integer.parseInt(m.group(1))));
+            }
+        }
+        return 70; // 默认分数
     }
 }
