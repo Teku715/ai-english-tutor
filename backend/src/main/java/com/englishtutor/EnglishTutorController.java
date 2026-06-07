@@ -2,8 +2,15 @@ package com.englishtutor;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-import java.util.*;
+import org.springframework.web.multipart.MultipartFile;
+
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api")
@@ -15,6 +22,9 @@ public class EnglishTutorController {
 
     @Autowired
     private ConversationService conversationService;
+
+    @Autowired
+    private SpeechService speechService;
 
     // 场景列表
     @GetMapping("/scenes")
@@ -54,23 +64,30 @@ public class EnglishTutorController {
             return err;
         }
 
-        String prompt;
+        String historyStr = history;
         if (sessionId != null && conversationService.hasSession(sessionId)) {
-            String historyStr = conversationService.buildHistoryString(sessionId);
-            prompt = buildChatPrompt(scene, message, historyStr);
+            historyStr = conversationService.buildHistoryString(sessionId);
             conversationService.addMessage(sessionId, "用户", message);
-        } else {
-            prompt = buildChatPrompt(scene, message, history);
         }
 
-        String reply = llmService.chat(prompt);
+        String systemPrompt = buildSystemPrompt(scene);
+        List<Map<String, Object>> historyMessages = parseHistoryMessages(historyStr, scene, 3);
+        String rawReply = llmService.chatDialog(systemPrompt, historyMessages, message.trim());
+        String cleanReply = ReplySanitizer.sanitizeModelReply(rawReply);
+        if (ReplySanitizer.looksBroken(cleanReply)) {
+            cleanReply = ReplySanitizer.fallbackReply(scene);
+        }
+        Map<String, String> parsed = ReplyScoreHelper.buildScoredReply(cleanReply, message.trim());
 
         if (sessionId != null && conversationService.hasSession(sessionId)) {
-            conversationService.addMessage(sessionId, "AI", reply);
+            conversationService.addMessage(sessionId, "AI", parsed.get("reply"));
         }
 
         Map<String, Object> result = new HashMap<>();
-        result.put("reply", reply);
+        result.put("reply", parsed.get("reply"));
+        result.put("cleanReply", parsed.get("cleanReply"));
+        result.put("score", parsed.get("score"));
+        result.put("scoreComment", parsed.get("scoreComment"));
         if (sessionId != null) {
             result.put("sessionId", sessionId);
         }
@@ -92,6 +109,30 @@ public class EnglishTutorController {
         return result;
     }
 
+    // 语音转文字（硅基流动 SenseVoice）
+    @PostMapping("/speech")
+    public Map<String, Object> speech(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "format", defaultValue = "webm") String format
+    ) {
+        Map<String, Object> result = new HashMap<>();
+        try {
+            if (file == null || file.isEmpty()) {
+                result.put("error", "音频文件不能为空");
+                result.put("code", 400);
+                return result;
+            }
+            String text = speechService.transcribe(file.getBytes(), format);
+            result.put("text", text);
+            result.put("transcript", text);
+            return result;
+        } catch (Exception e) {
+            result.put("error", e.getMessage());
+            result.put("code", 500);
+            return result;
+        }
+    }
+
     // 评测接口（返回结构化JSON）
     @PostMapping("/evaluate")
     public Map<String, Object> evaluate(@RequestBody Map<String, String> req) {
@@ -105,38 +146,35 @@ public class EnglishTutorController {
             return err;
         }
 
-        String prompt = "你是一个英语教师。请评测用户在下述场景中的英语表达。\n\n" +
-                "场景：" + scene + "\n" +
-                "用户说：" + text + "\n\n" +
-                "请从以下维度评分（每项0-100）：\n" +
-                "1. 语法正确性\n" +
-                "2. 词汇适当性\n" +
-                "3. 发音流畅度（根据文字判断）\n" +
-                "4. 表达自然度\n\n" +
-                "然后给出2-3个纠错建议。\n\n" +
-                "输出格式（严格按此JSON格式，不要有其他内容）：\n" +
-                "{\"grammar\":85,\"vocabulary\":80,\"fluency\":75,\"naturalness\":80,\"suggestions\":[\"建议1\",\"建议2\",\"建议3\"]}";
+        String prompt = "你是一位英语教师。请用简体中文评测下面这句英语口语表达。\n\n"
+                + "场景：" + sceneNameZh(scene) + "\n"
+                + "用户说：" + text + "\n\n"
+                + "要求：只输出简体中文纯文本，不要 JSON，不要代码块，不要英文标点替代中文。\n"
+                + "严格按以下格式输出：\n"
+                + "【综合评分】\n"
+                + "语法：85/100\n"
+                + "词汇：80/100\n"
+                + "流畅：75/100\n"
+                + "自然：80/100\n\n"
+                + "【改进建议】\n"
+                + "1. 第一条建议\n"
+                + "2. 第二条建议\n"
+                + "3. 第三条建议";
 
-        String result = llmService.chat(prompt);
+        String result = SummaryHelper.sanitizeSummary(llmService.chatSummary(prompt));
+        if (SummaryHelper.looksBroken(result)) {
+            result = "【综合评分】\n语法：80/100\n词汇：80/100\n流畅：78/100\n自然：80/100\n\n"
+                    + "【改进建议】\n"
+                    + "1. 继续保持完整句表达。\n"
+                    + "2. 注意介词和时态准确性。\n"
+                    + "3. 可加入更多细节让表达更自然。";
+        }
 
         Map<String, Object> res = new HashMap<>();
         res.put("text", text);
         res.put("scene", scene);
+        res.put("evaluation", result);
         res.put("raw", result);
-
-        // 尝试解析JSON结构化分数
-        try {
-            // 简单解析：grammar/N, vocabulary/N, fluency/N, naturalness/N
-            Map<String, Object> scores = new HashMap<>();
-            scores.put("grammar", parseScore(result, "grammar"));
-            scores.put("vocabulary", parseScore(result, "vocabulary"));
-            scores.put("fluency", parseScore(result, "fluency"));
-            scores.put("naturalness", parseScore(result, "naturalness"));
-            res.put("scores", scores);
-        } catch (Exception e) {
-            // 解析失败时返回原始结果
-        }
-
         return res;
     }
 
@@ -144,17 +182,34 @@ public class EnglishTutorController {
     @PostMapping("/summary")
     public Map<String, String> summary(@RequestBody Map<String, String> req) {
         String history = req.getOrDefault("history", "");
+        String scene = req.getOrDefault("scene", "interview");
+        String compactHistory = SummaryHelper.compactHistory(history);
 
-        String prompt = "你是一个英语教师。根据以下对话记录，生成一份课后学习总结：\n\n" +
-                history + "\n\n" +
-                "总结要包括：\n" +
-                "1. 本次练习的场景\n" +
-                "2. 用户表现好的地方（列出具体例子）\n" +
-                "3. 需要改进的地方（语法/词汇/表达方式）\n" +
-                "4. 下次练习建议（1-2条）\n\n" +
-                "用中文写，面向学生用户。";
+        String prompt = "你是一位英语教师。根据以下对话记录，生成一份简短的课后学习总结。\n\n"
+                + compactHistory + "\n\n"
+                + "要求：\n"
+                + "1. 只输出简体中文纯文本\n"
+                + "2. 不要 JSON，不要代码块，不要英文单词 on\n"
+                + "3. 每个小节最多 2 条，每条不超过 35 个汉字\n"
+                + "4. 禁止重复同一个词，禁止输出乱码\n"
+                + "严格按以下格式输出：\n"
+                + "【练习场景】\n"
+                + "...\n\n"
+                + "【表现亮点】\n"
+                + "1. ...\n"
+                + "2. ...\n\n"
+                + "【待改进】\n"
+                + "1. ...\n"
+                + "2. ...\n\n"
+                + "【下次建议】\n"
+                + "1. ...\n"
+                + "2. ...";
 
-        String result = llmService.chat(prompt);
+        String result = SummaryHelper.sanitizeSummary(llmService.chatSummary(prompt));
+        if (SummaryHelper.looksBroken(result)) {
+            result = SummaryHelper.fallbackSummary(history, scene);
+        }
+
         Map<String, String> res = new HashMap<>();
         res.put("summary", result);
         return res;
@@ -170,45 +225,88 @@ public class EnglishTutorController {
         return result;
     }
 
-    private String buildChatPrompt(String scene, String message, String history) {
+    private String buildSystemPrompt(String scene) {
         String sceneDesc;
         switch (scene) {
             case "interview":
-                sceneDesc = "求职面试场景。你扮演面试官，提问专业且有挑战性的问题。";
+                sceneDesc = "Job interview. You are the interviewer.";
                 break;
             case "restaurant":
-                sceneDesc = "餐厅点餐场景。你扮演服务员，帮助顾客完成点餐。";
+                sceneDesc = "Restaurant ordering. You are the waiter.";
                 break;
             case "meeting":
-                sceneDesc = "商务会议场景。你扮演会议主持人，引导讨论。";
+                sceneDesc = "Business meeting. You are the host.";
                 break;
             case "travel":
-                sceneDesc = "旅行问路场景。你扮演当地人，帮助游客。";
+                sceneDesc = "Travel directions. You are a local helper.";
                 break;
             case "shopping":
-                sceneDesc = "购物交流场景。你扮演店员，与顾客沟通需求。";
+                sceneDesc = "Shopping chat. You are the shop assistant.";
                 break;
             default:
-                sceneDesc = "日常英语对话练习。";
+                sceneDesc = "Daily English conversation practice.";
         }
 
-        String systemPrompt = "你是AI英语口语陪练。" + sceneDesc +
-                "\n要求：\n" +
-                "1. 用户用英语说，你用英语回复（偶尔可以用中文提示）\n" +
-                "2. 每轮对话后，给出当前回复的地道程度评分（1-10分）\n" +
-                "3. 如果用户表达有明显错误，回复后指出问题\n" +
-                "4. 保持对话自然流畅，模拟真实对话\n" +
-                "5. 每3-5轮后，询问用户是否需要总结\n\n" +
-                "格式示例：\n" +
-                "[AI]: How can I help you today?\n" +
-                "[评分: 9/10] 回复地道，发音清晰。\n\n" +
-                "现在开始对话：";
+        return "You are an English speaking tutor. " + sceneDesc + " "
+                + "Reply ONLY in plain English with 1-2 short sentences. "
+                + "Never repeat words. Never use brackets, tags, labels, scores, or Chinese. "
+                + "Never write Correction, Score, or 评分. "
+                + "If needed, weave a brief correction naturally into the sentence.";
+    }
 
-        if (!history.isEmpty()) {
-            systemPrompt = "对话历史：\n" + history + "\n\n" + systemPrompt;
+    private String sceneNameZh(String scene) {
+        switch (scene) {
+            case "interview":
+                return "求职面试";
+            case "restaurant":
+                return "餐厅点餐";
+            case "meeting":
+                return "商务会议";
+            case "travel":
+                return "旅行问路";
+            case "shopping":
+                return "购物交流";
+            default:
+                return "日常英语对话";
+        }
+    }
+
+    private List<Map<String, Object>> parseHistoryMessages(String history, String scene, int maxTurns) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        if (history == null || history.trim().isEmpty()) {
+            return messages;
         }
 
-        return systemPrompt + "\n\n用户：" + message + "\n[AI]:";
+        Pattern pattern = Pattern.compile("用户：(.*?)\\nAI：(.*?)(?=\\n用户：|$)", Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(history.trim());
+        List<Map<String, Object>> all = new ArrayList<>();
+
+        while (matcher.find()) {
+            String userText = matcher.group(1).trim();
+            String aiText = matcher.group(2).trim();
+            if (!userText.isEmpty()) {
+                Map<String, Object> user = new HashMap<>();
+                user.put("role", "user");
+                user.put("content", userText);
+                all.add(user);
+            }
+            if (!aiText.isEmpty()) {
+                String safeAiText = ReplySanitizer.sanitizeModelReply(aiText);
+                if (ReplySanitizer.looksBroken(safeAiText)) {
+                    safeAiText = ReplySanitizer.fallbackReply(scene);
+                }
+                Map<String, Object> assistant = new HashMap<>();
+                assistant.put("role", "assistant");
+                assistant.put("content", safeAiText);
+                all.add(assistant);
+            }
+        }
+
+        int maxMessages = maxTurns * 2;
+        if (all.size() <= maxMessages) {
+            return all;
+        }
+        return new ArrayList<>(all.subList(all.size() - maxMessages, all.size()));
     }
 
     private int parseScore(String text, String field) {
